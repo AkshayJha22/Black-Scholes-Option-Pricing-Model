@@ -1,0 +1,38 @@
+name: chain-snapshot
+
+# Captures a real SPY option chain on GitHub's runners (Yahoo Finance is
+# reachable there) and commits it under data/, so the explorer can show a
+# real volatility surface without network access. Run it by hand from the
+# Actions tab or with `gh workflow run chain-snapshot.yml`.
+on:
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: "Underlying ticker"
+        default: "SPY"
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install yfinance pandas
+      - run: python scripts/snapshot_chain.py --ticker "${{ github.event.inputs.ticker || 'SPY' }}"
+      - name: Commit the snapshot
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then
+            echo "Snapshot unchanged."
+          else
+            git commit -m "Add option chain snapshot"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
