@@ -1,0 +1,29 @@
+{
+  "as_of_utc": "2026-11-23 22:34",
+  "spot": 722.2899780273438,
+  "quotes_in_snapshot": 8375,
+  "quotes_used": 3246,
+  "expiries_fitted": 24,
+  "atm_iv_30d": 0.21659333504387102,
+  "median_rmse_vol_pts": 0.2881693790171104,
+  "max_rmse_vol_pts": 0.5063582449838522,
+  "skew_25d_range": [
+    6.820180788959574,
+    9.45089280707074
+  ],
+  "butterfly_ok": 23,
+  "calendar_flags": [
+    {
+      "days": 7,
+      "drop_vol_pts": 0.102
+    }
+  ],
+  "quoted_butterfly_arbitrages": 25,
+  "expiries_with_quoted_arbitrage": [
+    128,
+    219,
+    298,
+    311,
+    389
+  ]
+}
