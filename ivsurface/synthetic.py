@@ -47,7 +47,7 @@ def synthetic_chain(spot: float = 100.0, r: float = 0.04, q: float = 0.015,
                     rel_spread: float = 0.03, seed: int = 0, inject: str | None = None):
     """
     Build a chain with the columns of a real snapshot (expiry, days, type,
-    strike, bid, ask, last, volume, open_interest, yahoo_iv, spot).
+    strike, bid, ask, last, volume, open_interest, yahoo_iv, spot, rate).
 
     inject: None, "calendar" (the 91-day slice's variance is cut below the
     60-day slice's) or "butterfly" (the 30-day slice is replaced by a smile
@@ -85,5 +85,5 @@ def synthetic_chain(spot: float = 100.0, r: float = 0.04, q: float = 0.015,
                 ask = round(mid + half, 4)
                 rows.append({"expiry": expiry, "days": d, "type": kind, "strike": K,
                              "bid": bid, "ask": ask, "last": round(mid, 4), "volume": 100.0,
-                             "open_interest": 1000.0, "yahoo_iv": iv, "spot": spot})
+                             "open_interest": 1000.0, "yahoo_iv": iv, "spot": spot, "rate": r})
     return pd.DataFrame(rows), truth

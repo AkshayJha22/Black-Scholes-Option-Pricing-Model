@@ -4,10 +4,14 @@ Option chains: loading, cleaning, forwards, implied volatilities and the fitted 
 Pipeline for one chain:
   1. clean: drop quotes with no bid, crossed or locked markets, very wide
      spreads and expiries outside a maturity window; use mid prices;
-  2. forward and discount factor per expiry from put-call parity: across
-     strikes with both a call and a put, C - P = df * (F - K), so regressing
-     C - P on K gives the slope -df and the intercept df * F. No rate or
-     dividend assumption is needed;
+  2. forward and discount factor per expiry. European put-call parity says
+     C - P = df * (F - K) at every strike. Listed equity options (SPY's
+     included) are American: early exercise makes in-the-money options dearer
+     and tilts C - P, so a free regression of C - P on K returns a discount
+     factor above 1. With a risk-free rate (the 13-week T-bill stored with the
+     snapshot), df = exp(-r T) and only the forward is read off parity, at the
+     strikes nearest the money, as in Cboe's VIX method. Without a rate the
+     regression is used, with df capped at 1;
   3. implied volatilities (Black-76 on the forward) of out-of-the-money
      options only (puts below the forward, calls above), which are the liquid
      ones and carry no early-exercise premium worth speaking of;
@@ -36,6 +40,8 @@ def load_snapshot(ticker: str = "SPY", data_dir: Path = DATA_DIR) -> tuple[pd.Da
     chain = pd.read_csv(data_dir / f"{ticker}_chain_snapshot.csv")
     meta_path = data_dir / f"{ticker}_chain_meta.json"
     meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    if meta.get("tbill_13w") is not None and "rate" not in chain.columns:
+        chain["rate"] = float(meta["tbill_13w"])
     return chain, meta
 
 
@@ -61,8 +67,17 @@ def fetch_live(ticker: str, max_days: int = 400) -> tuple[pd.DataFrame, dict]:
                              "yahoo_iv": float(r.get("impliedVolatility", np.nan)), "spot": spot})
     if not rows:
         raise RuntimeError(f"No option chain returned for {ticker!r}.")
-    return pd.DataFrame(rows), {"ticker": ticker, "spot": spot,
-                                "as_of_utc": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M")}
+    out = pd.DataFrame(rows)
+    rate = None
+    try:
+        irx = yf.Ticker("^IRX").history(period="10d")["Close"].dropna()
+        rate = float(irx.iloc[-1]) / 100.0 if len(irx) else None
+    except Exception:
+        rate = None
+    if rate is not None:
+        out["rate"] = rate
+    return out, {"ticker": ticker, "spot": spot, "tbill_13w": rate,
+                 "as_of_utc": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M")}
 
 
 def clean(chain: pd.DataFrame, min_days: int = 2, max_days: int = 400,
@@ -76,15 +91,35 @@ def clean(chain: pd.DataFrame, min_days: int = 2, max_days: int = 400,
     return c[c["rel_spread"] <= max_rel_spread].reset_index(drop=True)
 
 
-def forward_and_discount(slice_: pd.DataFrame, spot: float) -> tuple[float, float, int]:
+def forward_and_discount(slice_: pd.DataFrame, spot: float, rate: float | None = None) -> tuple[float, float, int]:
     """
     Forward and discount factor of one expiry from put-call parity,
-    C - P = df * (F - K), fitted by least squares over strikes within 10% of
-    spot that have both a call and a put.
+    C - P = df * (F - K) (European).
+
+    With a risk-free rate, df = exp(-rate * T) and the forward is the median of
+    K + (C - P) / df over the six strikes nearest to where C - P changes sign,
+    where early exercise is worth least (American options make in-the-money
+    calls and puts dearer). Without one, C - P is regressed on K over strikes
+    within 10% of spot; the slope is -df, capped at 1, and the forward is read
+    near the money at that df. Returns (forward, df, strikes used).
     """
     calls = slice_[slice_["type"] == "C"].set_index("strike")["mid"]
     puts = slice_[slice_["type"] == "P"].set_index("strike")["mid"]
     both = pd.concat([calls, puts], axis=1, keys=["c", "p"]).dropna()
+    if both.empty:
+        return float(spot), 1.0, 0
+    T = float(slice_["days"].iloc[0]) / 365.0
+
+    def forward_near_money(df: float, n: int = 6) -> tuple[float, int]:
+        diff = both["c"] - both["p"]
+        k_star = float(diff.abs().idxmin())
+        near = both.iloc[np.argsort(np.abs(both.index.values - k_star))[:n]]
+        return float(np.median(near.index.values + (near["c"] - near["p"]).values / df)), len(near)
+
+    if rate is not None and np.isfinite(rate):
+        df = float(np.exp(-rate * T))
+        F, n = forward_near_money(df)
+        return F, df, n
     near = both[(both.index > 0.9 * spot) & (both.index < 1.1 * spot)]
     if len(near) < 3:
         near = both
@@ -92,22 +127,26 @@ def forward_and_discount(slice_: pd.DataFrame, spot: float) -> tuple[float, floa
         K = near.index.values.astype(float)
         slope, intercept = np.polyfit(K, (near["c"] - near["p"]).values, 1)
         df = -slope
-        if 0.8 < df <= 1.05:
+        if 0.8 < df <= 1.0:
             return float(intercept / df), float(df), int(len(near))
-    if len(both):  # fall back to the strike where call and put are closest
-        k0 = (both["c"] - both["p"]).abs().idxmin()
-        return float(k0 + both.loc[k0, "c"] - both.loc[k0, "p"]), 1.0, 1
-    return float(spot), 1.0, 0
+        if 1.0 < df <= 1.1:          # American early exercise tilts the line: cap at 1
+            F, n = forward_near_money(1.0)
+            return F, 1.0, n
+    F, n = forward_near_money(1.0)
+    return F, 1.0, n
 
 
-def implied_vols(chain: pd.DataFrame, spot: float | None = None) -> pd.DataFrame:
-    """Implied volatility of every out-of-the-money quote, with its forward and log-moneyness."""
+def implied_vols(chain: pd.DataFrame, spot: float | None = None, rate: float | None = None) -> pd.DataFrame:
+    """Implied volatility of every out-of-the-money quote, with its forward and log-moneyness.
+    rate: risk-free rate for discounting; defaults to the chain's "rate" column if it has one."""
     spot = float(chain["spot"].iloc[0]) if spot is None else spot
+    if rate is None and "rate" in chain.columns and chain["rate"].notna().any():
+        rate = float(chain["rate"].dropna().iloc[0])
     out = []
     for expiry, g in chain.groupby("expiry"):
         days = int(g["days"].iloc[0])
         T = days / 365.0
-        F, df, n_parity = forward_and_discount(g, spot)
+        F, df, n_parity = forward_and_discount(g, spot, rate)
         otm = g[((g["type"] == "P") & (g["strike"] < F)) | ((g["type"] == "C") & (g["strike"] >= F))].copy()
         if otm.empty:
             continue
@@ -184,6 +223,7 @@ def fit_surface(ivs: pd.DataFrame, min_points: int = 8, k_window: float = 4.0) -
     return Surface(fits=fits, summary=summary, calendar=cal, ivs=ivs)
 
 
-def build_surface(chain: pd.DataFrame, min_days: int = 2, max_days: int = 400) -> Surface:
+def build_surface(chain: pd.DataFrame, min_days: int = 2, max_days: int = 400,
+                  rate: float | None = None) -> Surface:
     """clean -> implied vols -> SVI fits -> arbitrage checks."""
-    return fit_surface(implied_vols(clean(chain, min_days, max_days)))
+    return fit_surface(implied_vols(clean(chain, min_days, max_days), rate=rate))

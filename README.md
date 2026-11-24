@@ -18,9 +18,12 @@ fixed and tested.
   Finance.
 * **Cleans it**: keeps two-sided quotes (bid above zero, ask above bid) with a
   relative spread under 50%, and uses mid prices.
-* **Reads the forward and discount factor of each expiry off put-call
-  parity**: C - P = DF (F - K) for every strike, so a straight-line fit of
-  C - P on K near the money gives both. No rate or dividend assumption needed.
+* **Reads the forward of each expiry off put-call parity**: C - P = DF (F - K)
+  at every strike, so F = K + (C - P) / DF, taken at the strikes nearest the
+  money, with DF from the 13-week T-bill. SPY options are American, and early
+  exercise makes in-the-money options dearer: a free regression of C - P on K
+  gives a discount factor above 1 for every SPY expiry (a negative rate), so
+  the rate is not read off the chain. No dividend assumption is needed.
 * **Computes implied volatilities** of out-of-the-money options (Black-76 on
   the forward), with Newton steps inside a shrinking bisection bracket, and
   their Greeks.
@@ -37,13 +40,14 @@ Reproduce with `python scripts/make_figures.py`.
 | | |
 |---|---|
 | Spot | 722.29, captured 23 Nov 2026 22:34 UTC (after the close) |
-| Quotes used | 3,246 of 8,375 (out of the money, two-sided, within 4 ATM standard deviations) |
+| Quotes used | 3,261 of 8,375 (out of the money, two-sided, within 4 ATM standard deviations) |
 | Expiries fitted | 24, from 2 to 389 days |
-| 30-day ATM implied volatility | 21.7% |
-| SVI fit error | median 0.29 vol points, worst 0.51 |
-| 25-delta put minus 25-delta call | 6.8 to 9.5 vol points across expiries |
-| Butterfly (fitted smiles) | 23 of 24 expiries clean; the 206-day slice dips just below zero (g = -0.0013) |
-| Calendar | one flag: the 7-day slice sits 0.10 vol points under the 4-day one at its worst point, at the 0.1-point threshold |
+| Discounting | 13-week T-bill, 4.15%; forwards read off parity at the six strikes nearest the money |
+| 30-day ATM implied volatility | 21.8% |
+| SVI fit error | median 0.32 vol points, worst 0.51 |
+| 25-delta put minus 25-delta call | 7.0 to 9.6 vol points across expiries |
+| Butterfly (fitted smiles) | 23 of 24 expiries clean; the 206-day slice dips just below zero (g = -0.0021) |
+| Calendar | two flags, both in long-dated quarter-end expiries quoted after the close: 219 days sits 0.25 vol points under 206 days, and 311 days 0.31 under 298 days |
 | Executable butterflies in the quotes | 25, all in five long-dated expiries (128 to 389 days); the snapshot was taken after the close, when long-dated quotes are often stale |
 
 ![SPY smiles](results/spy_smiles.png)
@@ -117,7 +121,7 @@ described a Plotly chart the app did not draw, and a committed `__pycache__`.
 ```bash
 pip install -r requirements.txt
 streamlit run app.py              # opens at http://localhost:8501
-python -m pytest -q tests         # 33 tests, about 40 seconds
+python -m pytest -q tests         # 35 tests, about 60 seconds
 python scripts/make_figures.py    # refits the SPY snapshot, rewrites results/
 ```
 
@@ -136,10 +140,11 @@ tab); the app also loads live chains when you have internet.
 * SVI: SSVI-to-SVI conversion, the density integrating to one, parameter
   recovery on a noise-free synthetic chain (within 10%), smile recovery within
   0.4 vol points with quote noise, forwards and discount factors recovered
-  from put-call parity, a clean surface passing every check, and injected
-  butterfly and calendar arbitrage being flagged;
-* the real SPY surface fitting with sensible numbers, the option-ageing path,
-  and the app rendering without exceptions.
+  from put-call parity, the forward still recovered when in-the-money puts
+  carry an early-exercise premium, a clean surface passing every check, and
+  injected butterfly and calendar arbitrage being flagged;
+* the real SPY surface fitting with sensible numbers and discounting at the
+  T-bill, the option-ageing path, and the app rendering without exceptions.
 
 ## Project layout
 
@@ -160,11 +165,14 @@ tests/                    pytest suite
 ## Limitations
 
 * One snapshot, taken after the close: long-dated quotes may be stale, which
-  is the likely source of the executable butterflies found.
+  is the likely source of the executable butterflies and the two calendar
+  flags found. The forwards sit about 0.13% above the 4 pm close even at two
+  days, because the quotes reflect after-hours trading in SPY.
 * Each expiry is fitted on its own; the slices are checked for calendar
   arbitrage but not fitted jointly (an SSVI or eSSVI fit would guarantee it).
-* American exercise is ignored: SPY options are American, but only
-  out-of-the-money quotes are used, where the early-exercise premium is small.
+* American exercise is handled only approximately: implied volatilities come
+  from out-of-the-money quotes, where the early-exercise premium is small, and
+  forwards from the strikes nearest the money, with the T-bill for discounting.
 * Deep wings (beyond 4 ATM standard deviations) are left out of the fits.
 
 *Educational project, not investment advice.*

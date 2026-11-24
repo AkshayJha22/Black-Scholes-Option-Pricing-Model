@@ -36,6 +36,7 @@ def get_chain(source: str, ticker: str):
     if source == "synthetic":
         chain, _ = synthetic_chain(seed=7)
         return chain, {"ticker": "SYNTHETIC", "spot": float(chain["spot"].iloc[0]),
+                       "tbill_13w": float(chain["rate"].iloc[0]),
                        "as_of_utc": "generated from a known SSVI surface"}
     return fetch_live(ticker)
 
@@ -97,8 +98,9 @@ with tab_surface:
     flags = int((~s["butterfly_ok"]).sum() + (~s["calendar_ok_vs_previous"]).sum())
     k[5].metric("Arbitrage flags", f"{flags}", help="SVI butterfly (negative density) plus calendar "
                 "(variance falling with maturity by more than 0.1 vol points)")
-    st.caption(f"Chain as of {meta.get('as_of_utc', 'n/a')} UTC. Forwards and discount factors come "
-               "from put-call parity; implied vols from out-of-the-money mid prices.")
+    rate_txt = f"the 13-week T-bill ({meta['tbill_13w']:.2%})" if meta.get("tbill_13w") else "parity (no rate available)"
+    st.caption(f"Chain as of {meta.get('as_of_utc', 'n/a')} UTC. Forwards come from put-call parity near the "
+               f"money, discounting from {rate_txt}; implied vols from out-of-the-money mid prices.")
 
     exps = list(s["expiry"])
     default = [exps[i] for i in np.unique(np.linspace(0, len(exps) - 1, min(6, len(exps))).astype(int))]
@@ -212,10 +214,12 @@ with tab_about:
 
 1. **Clean.** Keep two-sided quotes (bid above zero, ask above bid) with a
    relative spread under 50%, inside the chosen maturity window. Use mid prices.
-2. **Forward and discount factor per expiry.** Put-call parity says
-   $C - P = DF\,(F - K)$ for every strike, so a straight-line fit of $C - P$
-   against $K$ near the money gives $DF$ (minus the slope) and $F$. No rate or
-   dividend assumption is needed.
+2. **Forward per expiry.** Put-call parity says $C - P = DF\,(F - K)$ for
+   every strike, so $F = K + (C - P)/DF$, read at the strikes nearest the money,
+   with $DF = e^{-rT}$ at the 13-week T-bill. SPY options are American: early
+   exercise makes in-the-money options dearer and tilts $C - P$, so a free
+   regression of $C - P$ on $K$ would give a discount factor above 1. Without
+   a rate, that regression is the fallback, with $DF$ capped at 1.
 3. **Implied volatilities** of out-of-the-money options (puts below the
    forward, calls above) by Black-76, with Newton steps inside a shrinking
    bisection bracket.

@@ -64,6 +64,26 @@ def test_forward_and_discount_from_put_call_parity():
         assert n >= 3
 
 
+def test_forward_with_rate_survives_american_premium():
+    """American early exercise makes in-the-money options dearer. That tilts C - P,
+    so a free parity regression gives a discount factor above 1; with the rate known,
+    the forward is still recovered from the strikes nearest the money."""
+    chain, _ = synthetic_chain(seed=1, noise_vol=0.0, rel_spread=0.002, r=0.04, q=0.015)
+    c = clean(chain)
+    for days, g in c.groupby("days"):
+        T = days / 365
+        F_true = 100 * np.exp((0.04 - 0.015) * T)
+        g = g.copy()
+        deep_itm_put = (g["type"] == "P") & (g["strike"] > 1.03 * F_true)
+        g.loc[deep_itm_put, "mid"] += 0.05 * (g.loc[deep_itm_put, "strike"] - 1.03 * F_true)
+        _, df_free, _ = forward_and_discount(g, 100.0)
+        F, df, n = forward_and_discount(g, 100.0, rate=0.04)
+        assert df_free <= 1.0
+        assert df == pytest.approx(np.exp(-0.04 * T), abs=1e-12)
+        assert F == pytest.approx(F_true, rel=1e-4)
+        assert n == 6
+
+
 def test_clean_surface_has_no_arbitrage(clean_surface):
     surface, _ = clean_surface
     assert surface.summary["butterfly_ok"].all()
